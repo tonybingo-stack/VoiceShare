@@ -27,8 +27,12 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.media.AudioAttributes;
 import android.media.AudioDeviceInfo;
+import android.media.AudioFormat;
 import android.media.AudioManager;
+import android.media.AudioRecord;
+import android.media.AudioTrack;
 import android.media.MediaRecorder;
 import android.os.Build;
 import android.os.Bundle;
@@ -51,6 +55,7 @@ import androidx.core.content.ContextCompat;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -70,7 +75,25 @@ public class WalkieTalkieActivity extends Activity implements View.OnTouchListen
     public SipProfile me = null;
     public SipAudioCall call = null;
     public IncomingCallReceiver callReceiver;
+    private static final int SAMPLING_RATE_IN_HZ = 44100;
 
+    private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_DEFAULT;
+
+    private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
+
+    /**
+     * Factor by that the minimum buffer size is multiplied. The bigger the factor is the less
+     * likely it is that samples will be dropped, but more memory will be used. The minimum buffer
+     * size is determined by {@link AudioRecord#getMinBufferSize(int, int, int)} and depends on the
+     * recording settings.
+     */
+    private static final int BUFFER_SIZE_FACTOR = 2;
+
+    /**
+     * Size of the buffer where the audio data is stored by Android
+     */
+    private static final int BUFFER_SIZE = AudioRecord.getMinBufferSize(SAMPLING_RATE_IN_HZ,
+            CHANNEL_CONFIG, AUDIO_FORMAT) * BUFFER_SIZE_FACTOR;
     private static final int CALL_ADDRESS = 1;
     private static final int SET_AUTH_INFO = 2;
     private static final int UPDATE_SETTINGS_DIALOG = 3;
@@ -78,7 +101,8 @@ public class WalkieTalkieActivity extends Activity implements View.OnTouchListen
     private static final int REQUEST_READ_PHONE_STATE = 5;
     private static final int REQUEST_RECORD_AUDIO_PERMISSION = 6;
     private static final int REQUEST_WRITE_EXTERNAL_STORAGE = 7;
-
+    private AudioRecord recorder = null;
+     private AudioTrack player = null;
     private  boolean isConnected;
 
     @Override
@@ -99,9 +123,9 @@ public class WalkieTalkieActivity extends Activity implements View.OnTouchListen
         if (permissionCheck != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQUEST_WRITE_EXTERNAL_STORAGE);
         }
-        if(!checkAccessibilityPermission()){
-            Toast.makeText(this, "Permission denied", Toast.LENGTH_SHORT).show();
-        }
+//        if(!checkAccessibilityPermission()){
+//            Toast.makeText(this, "Permission denied", Toast.LENGTH_SHORT).show();
+//        }
 
         isConnected=false;
         ToggleButton pushToTalkButton = (ToggleButton) findViewById(R.id.pushToTalk);
@@ -120,7 +144,71 @@ public class WalkieTalkieActivity extends Activity implements View.OnTouchListen
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 //        runthread();
         initializeManager();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+//            initRecordPlayer();
+            Log.d("BINGO", "here");
+        }
     }
+
+    @RequiresApi(api = Build.VERSION_CODES.M)
+    private void initRecordPlayer() {
+        player = new AudioTrack.Builder()
+                .setAudioAttributes(new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build())
+                .setAudioFormat(new AudioFormat.Builder()
+                        .setEncoding(AUDIO_FORMAT)
+                        .setSampleRate(SAMPLING_RATE_IN_HZ)
+                        .setChannelMask(CHANNEL_CONFIG)
+                        .build())
+                .setBufferSizeInBytes(BUFFER_SIZE)
+                .build();
+        Log.d("BINGO", "here1");
+
+//        player.setPlaybackPositionUpdateListener(new AudioTrack.OnPlaybackPositionUpdateListener() {
+//            @Override
+//            public void onMarkerReached(AudioTrack track) {
+//                // Handle audio data
+//            }
+//
+//            @Override
+//            public void onPeriodicNotification(AudioTrack track) {
+//                // Handle audio data
+//            }
+//        });
+
+        player.setPositionNotificationPeriod(160);
+        player.play();
+        Log.d("BINGO", "here2");
+
+        recorder = new AudioRecord(MediaRecorder.AudioSource.MIC,
+                SAMPLING_RATE_IN_HZ, CHANNEL_CONFIG,
+                AUDIO_FORMAT, BUFFER_SIZE);
+        recorder.setRecordPositionUpdateListener(new AudioRecord.OnRecordPositionUpdateListener() {
+            @Override
+            public void onMarkerReached(AudioRecord recorder) {
+                // Handle audio data
+                final ByteBuffer buffer = ByteBuffer.allocateDirect(BUFFER_SIZE);
+
+                recorder.read(buffer, BUFFER_SIZE);
+                player.write(buffer.array(), 0, BUFFER_SIZE);
+                Log.d("BINGO", "Here is data");
+            }
+
+            @Override
+            public void onPeriodicNotification(AudioRecord recorder) {
+                // Handle audio data
+            }
+        });
+        Log.d("BINGO", "here3");
+
+        recorder.setPositionNotificationPeriod(160);
+        recorder.startRecording();
+        Log.d("BINGO", "here4");
+
+    }
+
     // method to check is the user has permitted the accessibility permission
     // if not then prompt user to the system's Settings activity
     public boolean checkAccessibilityPermission () {
@@ -232,8 +320,8 @@ public class WalkieTalkieActivity extends Activity implements View.OnTouchListen
 
                     public void onRegistrationDone(String localProfileUri, long expiryTime) {
                         updateStatus("Online");
-                        isConnected=true;
-                        initiateCall();
+//                        isConnected=true;
+//                        initiateCall();
                     }
 
                     public void onRegistrationFailed(String localProfileUri, int errorCode,
@@ -269,10 +357,6 @@ public class WalkieTalkieActivity extends Activity implements View.OnTouchListen
      * Make an outgoing call.
      */
     public void initiateCall() {
-//                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-//                            Log.d("BINGO", "recording start...");
-//                            startVoiceShare();
-//                        }
         updateStatus(sipAddress);
         try {
             SipAudioCall.Listener listener = new SipAudioCall.Listener() {
